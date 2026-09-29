@@ -1,0 +1,53 @@
+name: 식단 자동 갱신
+
+on:
+  schedule:
+    - cron: '0 21-23,0-11 * * *'   # 한국시간 06~20시 매시
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-meals
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 이번 주 / 다음 주 식단 받기
+        run: |
+          today=$(TZ=Asia/Seoul date +%F)
+          dow=$(TZ=Asia/Seoul date +%u)
+          for offset in 0 7; do
+            monday=$(date -d "$today -$((dow-1)) days +${offset} days" +%Y%m%d)
+            url="https://daonna.net/get_weekly_meals?date=${monday}&rest_id=4"
+            if curl -fsS --max-time 20 "$url" -o /tmp/meals.json \
+               && jq -e 'type == "array"' /tmp/meals.json > /dev/null; then
+              jq -c . /tmp/meals.json > "${monday}.json"
+              echo "저장: ${monday}.json"
+            else
+              echo "건너뜀(받기 실패): ${monday}"
+            fi
+          done
+          cutoff=$(date -d "$today -21 days" +%Y%m%d)
+          for f in [0-9]*.json; do
+            [ -e "$f" ] || continue
+            name=$(basename "$f" .json)
+            if [ "$name" \< "$cutoff" ]; then rm -f "$f"; fi
+          done
+
+      - name: 바뀐 게 있으면 커밋
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add -A .
+          if git diff --cached --quiet; then
+            echo "변경 없음"
+          else
+            git commit -m "식단 자동 갱신"
+            git push
+          fi
